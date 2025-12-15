@@ -6,6 +6,10 @@
 *.swo
 *~
 
+# Sensitive documentation folder
+
+docs/
+
 # Data directories - don't commit database files or volumes
 data/
 backups/
@@ -65,6 +69,9 @@ Thumbs.db
 
 # Docker Compose override files
 docker-compose.override.yml
+
+# Service-specific environment files
+docker-compose/*.env
 
 # Local development files
 local-dev/

@@ -1,0 +1,152 @@
+
+  version: '3.8'
+
+  networks:
+    trading-network:
+      driver: bridge
+      ipam:
+        config:
+          - subnet: 172.22.0.0/16  # Different from common defaults
+
+  volumes:
+    gitea-data:
+    jenkins-data:
+    postgres-data:
+    timescale-data:
+    redis-data:
+    grafana-data:
+    prometheus-data:
+    loki-data:
+
+  services:
+    # ============ VERSION CONTROL ============
+    gitea:
+      image: gitea/gitea:latest
+      container_name: trading-gitea
+      restart: unless-stopped
+      environment:
+        - USER_UID=1000
+        - USER_GID=1000
+        - DB_TYPE=sqlite3
+      volumes:
+        - ../data/gitea:/data
+        - /etc/timezone:/etc/timezone:ro
+        - /etc/localtime:/etc/localtime:ro
+      ports:
+        - "3001:3000"     # Gitea on 3001 (Metabase uses 3000 internally)
+      networks:
+        - trading-network
+      healthcheck:
+        test: ["CMD", "wget", "-q", "-O-", "http://localhost:3000"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+
+    # ============ CI/CD ============
+    jenkins:
+      image: jenkins/jenkins:lts-jdk17
+      container_name: trading-jenkins
+      restart: unless-stopped
+      user: root
+      environment:
+        - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+      volumes:
+        - ../data/jenkins:/var/jenkins_home
+        - /var/run/docker.sock:/var/run/docker.sock
+      ports:
+        - "8081:8080"     # Jenkins on 8081
+        - "50001:50000"   # Jenkins agent on 50001
+      networks:
+        - trading-network
+      privileged: true
+
+    # ============ DATABASES ============
+    postgres:
+      image: postgres:17-alpine
+      container_name: trading-postgres
+      restart: unless-stopped
+      env_file:
+        - postgres.env
+      volumes:
+        - ../data/postgres:/var/lib/postgresql/data
+      ports:
+        - "${POSTGRES_EXTERNAL_PORT:-5433}:${POSTGRES_INTERNAL_PORT:-5432}"     # PostgreSQL on 5433
+      networks:
+        - trading-network
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin}"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+
+    timescale:
+      image: timescale/timescaledb:latest-pg17
+      container_name: trading-timescale
+      restart: unless-stopped
+      env_file:
+        - timescale.env
+      volumes:
+        - ../data/timescale:/var/lib/postgresql/data
+      ports:
+        - "${TIMESCALE_EXTERNAL_PORT:-5434}:${TIMESCALE_INTERNAL_PORT:-5432}"     # TimescaleDB on 5434
+      networks:
+        - trading-network
+      command: ["postgres", "-c", "shared_preload_libraries=timescaledb"]
+
+    redis:
+      image: redis:8.4.0-alpine
+      container_name: trading-redis
+      restart: unless-stopped
+      env_file:
+        - redis.env
+      command: redis-server --appendonly ${REDIS_APPENDONLY:-yes} --requirepass ${REDIS_PASSWORD:-redis123}
+      volumes:
+        - ../data/redis:/data
+      ports:
+        - "${REDIS_EXTERNAL_PORT:-6380}:${REDIS_INTERNAL_PORT:-6379}"     # Redis on 6380
+      networks:
+        - trading-network
+
+    # ============ MONITORING ============
+    prometheus:
+      image: prom/prometheus:latest
+      container_name: trading-prometheus
+      restart: unless-stopped
+      volumes:
+        - ../data/prometheus:/prometheus
+      ports:
+        - "9091:9090"     # Prometheus on 9091
+      networks:
+        - trading-network
+      command:
+        - '--config.file=/etc/prometheus/prometheus.yml'
+        - '--storage.tsdb.path=/prometheus'
+        - '--storage.tsdb.retention.time=200h'
+
+    grafana:
+      image: grafana/grafana:latest
+      container_name: trading-grafana
+      restart: unless-stopped
+      env_file:
+        - grafana.env
+      volumes:
+        - ../data/grafana:/var/lib/grafana
+      ports:
+        - "${GRAFANA_EXTERNAL_PORT:-3002}:${GRAFANA_INTERNAL_PORT:-3000}"     # Grafana on 3002
+      networks:
+        - trading-network
+      depends_on:
+        - prometheus
+
+    # ============ LOGGING ============
+    loki:
+      image: grafana/loki:latest
+      container_name: trading-loki
+      restart: unless-stopped
+      volumes:
+        - ../data/loki:/loki
+      ports:
+        - "3101:3100"     # Loki on 3101
+      networks:
+        - trading-network
+      command: -config.file=/etc/loki/local-config.yaml
